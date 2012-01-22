@@ -344,17 +344,27 @@ module ActiveRecord
 
       def master_clock
         conn = master_connection
+        out = nil
         if status = conn.uncached { conn.select_one("SHOW MASTER STATUS") }
-          Clock.new(status['File'], status['Position'])
+          out = Clock.new(status['File'], status['Position'])
         end
+        if Rails.env.production?
+          out ||= Clock.infinity
+        else
+          out ||= Clock.zero
+        end
+        out
       end
 
       def slave_clock(conn)
+        out = nil
         if status = conn.uncached { conn.select_one("SHOW SLAVE STATUS") }
-          Clock.new(status['Relay_Master_Log_File'], status['Exec_Master_Log_Pos']).tap do |c|
+          out = Clock.new(status['Relay_Master_Log_File'], status['Exec_Master_Log_Pos']).tap do |c|
             set_last_seen_slave_clock(conn, c)
           end
         end
+        out ||= Clock.zero
+        out
       end
 
       def slave_consistent?(conn, clock)
