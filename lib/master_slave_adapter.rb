@@ -126,7 +126,17 @@ module ActiveRecord
 
         @connections = {}
         @connections[:master] = connect(config.fetch(:master), :master)
-        @connections[:slaves] = config.fetch(:slaves).map { |cfg| connect(cfg, :slave) }
+        
+        @connections[:slaves] = []
+        if config[:slaves]
+          config.fetch(:slaves).each do |cfg|
+            begin
+              @connections[:slaves] << connect(cfg, :slave)
+            rescue StandardError => e
+              Rails.logger.error "Slave can not connect ::: #{cfg.inspect}"
+            end
+          end
+        end
 
         @disable_connection_test = config.delete(:disable_connection_test) == 'true'
 
@@ -223,7 +233,16 @@ module ActiveRecord
       end
 
       def reconnect!
-        self.connections.each { |c| c.reconnect! }
+        @connections[:slaves].delete_if do |slave|
+          begin
+            slave.reconnect!
+            false
+          rescue StandardError => e
+            Rails.logger.error "Slave can not reconnect! ::: #{slave}"
+            true
+          end
+        end
+        @connections[:master].reconnect!
       end
 
       def disconnect!
@@ -323,7 +342,7 @@ module ActiveRecord
       # Returns a random slave connection
       # Note: the method is not referentially transparent, hence the bang
       def slave_connection!
-        @connections[:slaves].sample
+        @connections[:slaves].sample || master_connection
       end
 
       def connections
@@ -331,7 +350,7 @@ module ActiveRecord
       end
 
       def current_connection
-        connection_stack.first
+        connection_stack.first || master_connection
       end
 
       def current_connection=(conn)
