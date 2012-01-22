@@ -78,6 +78,21 @@ module ActiveRecord
         end
       end
     end
+  
+    module MasterSlaveBehavior
+      def self.included(base)
+        base.alias_method_chain(:reload, :master_slave)
+      end
+      
+      # Force reload to use the master connection since it's probably being called for a reason.
+      def reload_with_master_slave(*args)
+        self.class.with_master do
+          reload_without_master_slave(*args)
+        end
+      end
+    end
+    
+    include(MasterSlaveBehavior) unless include?(MasterSlaveBehavior)
   end
 
   module ConnectionAdapters
