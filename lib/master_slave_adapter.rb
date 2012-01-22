@@ -42,6 +42,10 @@ module ActiveRecord
         ConnectionAdapters::MasterSlaveAdapter.new(config, logger)
       end
 
+      def mysql_master_slave_connection(config)
+        master_slave_connection(config)
+      end
+
     private
 
       def massage(config)
