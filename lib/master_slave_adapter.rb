@@ -55,6 +55,7 @@ module ActiveRecord
           reject { |k,_| skip.include?(k) }.
           merge(:adapter => config.fetch(:connection_adapter))
         ([config.fetch(:master)] + config.fetch(:slaves, [])).map do |cfg|
+          cfg[:database] = defaults[:database] if defaults.has_key?(:database)
           cfg.symbolize_keys!.reverse_merge!(defaults)
         end
         config
@@ -273,6 +274,7 @@ module ActiveRecord
                :to => :master_connection }])
       # no clear interface contract:
       delegate :tables,         # commented in SchemaStatements
+               :indexes,        # migrations
                :truncate_table, # monkeypatching database_cleaner gem
                :primary_key,    # is Base#primary_key meant to be the contract?
                :to => :master_connection
