@@ -130,7 +130,11 @@ module ActiveRecord
 
         @disable_connection_test = config.delete(:disable_connection_test) == 'true'
 
-        self.current_connection = slave_connection!
+        if config.delete(:initial_connection) == 'master'
+          self.current_connection = master_connection
+        else
+          self.current_connection = slave_connection!
+        end
       end
 
       # MASTER SLAVE ADAPTER INTERFACE ========================================
