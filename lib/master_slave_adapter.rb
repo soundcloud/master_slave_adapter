@@ -55,6 +55,7 @@ module ActiveRecord
           reject { |k,_| skip.include?(k) }.
           merge(:adapter => config.fetch(:connection_adapter))
         ([config.fetch(:master)] + config.fetch(:slaves, [])).map do |cfg|
+          cfg[:database] = defaults[:database] if defaults.has_key?(:database)
           cfg.symbolize_keys!.reverse_merge!(defaults)
         end
         config
@@ -77,6 +78,21 @@ module ActiveRecord
         end
       end
     end
+  
+    module MasterSlaveBehavior
+      def self.included(base)
+        base.alias_method_chain(:reload, :master_slave)
+      end
+      
+      # Force reload to use the master connection since it's probably being called for a reason.
+      def reload_with_master_slave(*args)
+        self.class.with_master do
+          reload_without_master_slave(*args)
+        end
+      end
+    end
+    
+    include(MasterSlaveBehavior) unless include?(MasterSlaveBehavior)
   end
 
   module ConnectionAdapters
@@ -125,11 +141,25 @@ module ActiveRecord
 
         @connections = {}
         @connections[:master] = connect(config.fetch(:master), :master)
-        @connections[:slaves] = config.fetch(:slaves).map { |cfg| connect(cfg, :slave) }
+        
+        @connections[:slaves] = []
+        if config[:slaves]
+          config.fetch(:slaves).each do |cfg|
+            begin
+              @connections[:slaves] << connect(cfg, :slave)
+            rescue StandardError => e
+              Rails.logger.error "Slave can not connect ::: #{cfg.inspect}"
+            end
+          end
+        end
 
         @disable_connection_test = config.delete(:disable_connection_test) == 'true'
 
-        self.current_connection = slave_connection!
+        if config.delete(:initial_connection) == 'master'
+          self.current_connection = master_connection
+        else
+          self.current_connection = slave_connection!
+        end
       end
 
       # MASTER SLAVE ADAPTER INTERFACE ========================================
@@ -218,7 +248,16 @@ module ActiveRecord
       end
 
       def reconnect!
-        self.connections.each { |c| c.reconnect! }
+        @connections[:slaves].delete_if do |slave|
+          begin
+            slave.reconnect!
+            false
+          rescue StandardError => e
+            Rails.logger.error "Slave can not reconnect! ::: #{slave}"
+            true
+          end
+        end
+        @connections[:master].reconnect!
       end
 
       def disconnect!
@@ -276,6 +315,7 @@ module ActiveRecord
                :to => :master_connection
       # no clear interface contract:
       delegate :tables,         # commented in SchemaStatements
+               :indexes,        # migrations
                :truncate_table, # monkeypatching database_cleaner gem
                :primary_key,    # is Base#primary_key meant to be the contract?
                :to => :master_connection
@@ -320,7 +360,7 @@ module ActiveRecord
       # Returns a random slave connection
       # Note: the method is not referentially transparent, hence the bang
       def slave_connection!
-        @connections[:slaves].sample
+        @connections[:slaves].sample || master_connection
       end
 
       def connections
@@ -328,7 +368,7 @@ module ActiveRecord
       end
 
       def current_connection
-        connection_stack.first
+        connection_stack.first || master_connection
       end
 
       def current_connection=(conn)
@@ -345,17 +385,27 @@ module ActiveRecord
 
       def master_clock
         conn = master_connection
+        out = nil
         if status = conn.uncached { conn.select_one("SHOW MASTER STATUS") }
-          Clock.new(status['File'], status['Position'])
+          out = Clock.new(status['File'], status['Position'])
         end
+        if Rails.env.production?
+          out ||= Clock.infinity
+        else
+          out ||= Clock.zero
+        end
+        out
       end
 
       def slave_clock(conn)
+        out = nil
         if status = conn.uncached { conn.select_one("SHOW SLAVE STATUS") }
-          Clock.new(status['Relay_Master_Log_File'], status['Exec_Master_Log_Pos']).tap do |c|
+          out = Clock.new(status['Relay_Master_Log_File'], status['Exec_Master_Log_Pos']).tap do |c|
             set_last_seen_slave_clock(conn, c)
           end
         end
+        out ||= Clock.zero
+        out
       end
 
       def slave_consistent?(conn, clock)
