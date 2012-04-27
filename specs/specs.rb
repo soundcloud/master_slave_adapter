@@ -44,14 +44,14 @@ describe ActiveRecord::ConnectionAdapters::MasterSlaveAdapter do
       'master connection',
       mocked_methods.merge(:open_transactions => 0)
     ).tap do |conn|
-      conn.stub!(:uncached) { |blk| blk.call }
+      conn.stub!(:uncached).and_yield
       ActiveRecord::Base.master_mock = conn
     end
   end
 
   let!(:slave_connection) do
     mock('slave connection', mocked_methods).tap do |conn|
-      conn.stub!(:uncached) { |blk| blk.call }
+      conn.stub!(:uncached).and_yield
       ActiveRecord::Base.slave_mock = conn
     end
   end
@@ -77,7 +77,7 @@ describe ActiveRecord::ConnectionAdapters::MasterSlaveAdapter do
     ActiveRecord::Base.connection_handler.clear_all_connections!
   end
 
-  describe 'with common configuration' do
+  describe 'common configuration' do
     before do
       [ master_connection, slave_connection ].each do |c|
         c.stub!( :select_value ).with( "SELECT 1", "test select" ).and_return( true )
@@ -160,7 +160,7 @@ describe ActiveRecord::ConnectionAdapters::MasterSlaveAdapter do
     end
   end
 
-  context "connection testing" do
+  describe "connection testing" do
     context "disabled" do
       let(:database_setup) do
         default_database_setup.merge(:disable_connection_test => 'true')
@@ -198,7 +198,7 @@ describe ActiveRecord::ConnectionAdapters::MasterSlaveAdapter do
     end
   end
 
-  describe 'with consistency' do
+  describe 'consistency' do
     before do
       ActiveRecord::ConnectionAdapters::MasterSlaveAdapter.reset!
 
@@ -287,7 +287,6 @@ describe ActiveRecord::ConnectionAdapters::MasterSlaveAdapter do
         new_clock.should be_a(zero.class)
         new_clock.should > old_clock
       end
-
     end
 
     it "should update the clock after a transaction" do
@@ -301,7 +300,7 @@ describe ActiveRecord::ConnectionAdapters::MasterSlaveAdapter do
       master_connection.
         should_receive('update').exactly(3).times.with('testing').
         and_return(true)
-     master_connection.
+      master_connection.
         should_receive('select_all').exactly(5).times.with('testing').
         and_return(true)
       %w(begin_db_transaction
@@ -512,7 +511,7 @@ describe ActiveRecord::ConnectionAdapters::MasterSlaveAdapter do
       end
     end
 
-    context "rollback" do
+    context "on rollback" do
       it "on_commit callback should not be called" do
         x = false
         adapter_connection.on_commit { x = true }
@@ -523,6 +522,43 @@ describe ActiveRecord::ConnectionAdapters::MasterSlaveAdapter do
         x = false
         adapter_connection.on_rollback { x = true }
         lambda { fail_tx }.should change { x }.to(true)
+      end
+    end
+  end
+
+  describe "query cache" do
+    describe "#cache" do
+      it "activities query caching on all connections" do
+        master_connection.should_receive(:cache).and_yield
+        slave_connection.should_receive(:cache).and_yield
+        master_connection.should_not_receive(:select_value)
+        slave_connection.should_receive(:select_value)
+
+        adapter_connection.cache do
+          adapter_connection.select_value("SELECT 42")
+        end
+      end
+    end
+
+    describe "#uncached" do
+      it "deactivates query caching on all connections" do
+        master_connection.should_receive(:uncached).and_yield
+        slave_connection.should_receive(:uncached).and_yield
+        master_connection.should_not_receive(:select_value)
+        slave_connection.should_receive(:select_value)
+
+        adapter_connection.uncached do
+          adapter_connection.select_value("SELECT 42")
+        end
+      end
+    end
+
+    describe "#clear_query_cache" do
+      it "clears the query cache on all connections" do
+        master_connection.should_receive(:clear_query_cache)
+        slave_connection.should_receive(:clear_query_cache)
+
+        adapter_connection.clear_query_cache
       end
     end
   end

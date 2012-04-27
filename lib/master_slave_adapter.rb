@@ -61,7 +61,7 @@ module ActiveRecord
       end
 
       def load_adapter(adapter_name)
-        unless self.respond_to?("#{adapter_name}_connection")
+        unless respond_to?("#{adapter_name}_connection")
           begin
             require 'rubygems'
             gem "activerecord-#{adapter_name}-adapter"
@@ -135,11 +135,11 @@ module ActiveRecord
       # MASTER SLAVE ADAPTER INTERFACE ========================================
 
       def with_master
-        with(self.master_connection, :master) { yield }
+        with(master_connection) { yield }
       end
 
       def with_slave
-        with(self.slave_connection!, :slave) { yield }
+        with(slave_connection!) { yield }
       end
 
       def with_consistency(clock)
@@ -148,12 +148,12 @@ module ActiveRecord
         slave = slave_connection!
         conn =
           if !open_transaction? && slave_consistent?(slave, clock)
-            [ slave, :slave ]
+            slave
           else
-            [ master_connection, :master ]
+            master_connection
           end
 
-        with(*conn) { yield }
+        with(conn) { yield }
 
         self.current_clock || clock
       end
@@ -208,25 +208,41 @@ module ActiveRecord
 
       def rollback_db_transaction
         on_commit_callbacks.clear
-        with(master_connection, :master) { |conn| conn.rollback_db_transaction }
+        with(master_connection) { |conn| conn.rollback_db_transaction }
         on_rollback_callbacks.shift.call until on_rollback_callbacks.blank?
       end
 
       def active?
         return true if @disable_connection_test
-        self.connections.map { |c| c.active? }.reduce(true) { |m,s| s ? m : s }
+        connections.map { |c| c.active? }.all?
       end
 
       def reconnect!
-        self.connections.each { |c| c.reconnect! }
+        connections.each { |c| c.reconnect! }
       end
 
       def disconnect!
-        self.connections.each { |c| c.disconnect! }
+        connections.each { |c| c.disconnect! }
       end
 
       def reset!
-        self.connections.each { |c| c.reset! }
+        connections.each { |c| c.reset! }
+      end
+
+      def cache(&block)
+        connections.inject(block) do |block, connection|
+          lambda { connection.cache(&block) }
+        end.call
+      end
+
+      def uncached(&block)
+        connections.inject(block) do |block, connection|
+          lambda { connection.uncached(&block) }
+        end.call
+      end
+
+      def clear_query_cache
+        connections.each { |connection| connection.clear_query_cache }
       end
 
       # Someone calling execute directly on the connection is likely to be a
@@ -282,13 +298,13 @@ module ActiveRecord
       # ok, we might have missed more
       def method_missing(name, *args, &blk)
         master_connection.send(name.to_sym, *args, &blk).tap do
-          warn %Q{
+          @logger.try(:warn, %Q{
             You called the unsupported method '#{name}' on #{self.class.name}.
             In order to help us improve master_slave_adapter, please report this
             to: https://github.com/soundcloud/master_slave_adapter/issues
 
             Thank you.
-          }
+          })
         end
       end
 
@@ -301,7 +317,7 @@ module ActiveRecord
                :to => :connection_for_read
 
       def connection_for_read
-        open_transaction? ? master_connection : self.current_connection
+        open_transaction? ? master_connection : current_connection
       end
       private :connection_for_read
 
@@ -366,7 +382,7 @@ module ActiveRecord
     protected
 
       def on_write
-        with(master_connection, :master) do |conn|
+        with(master_connection) do |conn|
           yield(conn).tap do
             unless open_transaction?
               if mc = master_clock
@@ -379,28 +395,12 @@ module ActiveRecord
         end
       end
 
-      def with(conn, name)
+      def with(conn)
         self.current_connection = conn
         yield(conn).tap { connection_stack.shift }
       end
 
     private
-
-      def logger
-        @logger # ||= Logger.new(STDOUT)
-      end
-
-      def info(msg)
-        logger.try(:info, msg)
-      end
-
-      def warn(msg)
-        logger.try(:warn, msg)
-      end
-
-      def debug(msg)
-        logger.debug(msg) if logger && logger.debug?
-      end
 
       def connect(cfg, name)
         adapter_method = "#{cfg.fetch(:adapter)}_connection".to_sym
