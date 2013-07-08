@@ -66,7 +66,7 @@ module ActiveRecord
               require "active_record/connection_adapters/#{adapter_name}_adapter"
             rescue LoadError
               raise %Q{Please install the #{adapter_name} adapter:
-                       `gem install activerecord-#{adapter_name}-adapter` (#{$!})"}
+                       `gem install activerecord-#{adapter_name}-adapter` (#{$!})}
             end
           end
         end
